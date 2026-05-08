@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>關鍵一條線 — 技術分析工具</title>
+    <meta name="description" content="台股關鍵一條線技術分析工具，即時 K 線圖、10MA 乖離、買賣訊號提示">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+    <!-- ===== HEADER ===== -->
+    <header id="app-header">
+        <div class="header-left">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 32 32" width="28" height="28"><rect x="2" y="18" width="5" height="12" rx="1" fill="#f59e0b"/><rect x="9" y="10" width="5" height="20" rx="1" fill="#ef4444"/><rect x="16" y="14" width="5" height="16" rx="1" fill="#22c55e"/><rect x="23" y="6" width="5" height="24" rx="1" fill="#f59e0b"/><line x1="1" y1="4" x2="30" y2="4" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 2"/></svg>
+                <h1>關鍵一條線</h1>
+                <span class="badge">PRO</span>
+            </div>
+        </div>
+        <div class="header-center">
+            <div class="search-box">
+                <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="text" id="stock-input" placeholder="輸入代碼或名稱（例：2330 或 台積電）" autocomplete="off">
+                <select id="range-select" title="資料區間">
+                    <option value="1mo">1 個月</option>
+                    <option value="3mo" selected>3 個月</option>
+                    <option value="6mo">6 個月</option>
+                    <option value="1y">1 年</option>
+                    <option value="2y">2 年</option>
+                </select>
+                <button id="search-btn" type="button">分析</button>
+            </div>
+        </div>
+        <div class="header-right">
+            <button id="settings-toggle" class="icon-btn" title="設定">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- ===== SETTINGS PANEL ===== -->
+    <div id="settings-panel" class="settings-panel hidden">
+        <div class="settings-grid">
+            <div class="setting-item">
+                <label for="threshold-input">漲幅門檻 (%)</label>
+                <input type="number" id="threshold-input" value="4" min="1" max="15" step="0.5">
+            </div>
+            <div class="setting-item">
+                <label for="lookback-input">前高回看天數</label>
+                <input type="number" id="lookback-input" value="20" min="5" max="120" step="5">
+            </div>
+            <div class="setting-item">
+                <label for="near-pct-input" title="設定股價距離關鍵線多少 % 以內算「進入買點區間」。數值越大，越容易觸發買點訊號；數值越小，買點條件越嚴格。">接近關鍵線 (%) ⓘ</label>
+                <input type="number" id="near-pct-input" value="3" min="1" max="10" step="0.5">
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== STOCK INFO BAR ===== -->
+    <div id="stock-info-bar" class="stock-info-bar hidden">
+        <div class="info-item" id="info-name"><span class="info-label">股票</span><span class="info-value">—</span></div>
+        <div class="info-item" id="info-price"><span class="info-label">現價</span><span class="info-value">—</span></div>
+        <div class="info-item" id="info-change"><span class="info-label">漲跌</span><span class="info-value">—</span></div>
+        <div class="info-item" id="info-volume"><span class="info-label">成交量</span><span class="info-value">—</span></div>
+        <div class="info-item" id="info-high"><span class="info-label">最高</span><span class="info-value">—</span></div>
+        <div class="info-item" id="info-low"><span class="info-label">最低</span><span class="info-value">—</span></div>
+    </div>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main id="main-content">
+        <!-- Welcome Screen -->
+        <div id="welcome-screen" class="welcome-screen">
+            <div class="welcome-inner">
+                <svg class="welcome-icon" viewBox="0 0 80 80" width="80" height="80">
+                    <rect x="5" y="45" width="12" height="28" rx="2" fill="#f59e0b" opacity="0.7"/>
+                    <rect x="22" y="25" width="12" height="48" rx="2" fill="#ef4444" opacity="0.8"/>
+                    <rect x="39" y="35" width="12" height="38" rx="2" fill="#22c55e" opacity="0.7"/>
+                    <rect x="56" y="15" width="12" height="58" rx="2" fill="#ef4444" opacity="0.9"/>
+                    <line x1="2" y1="12" x2="75" y2="12" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="6 3"/>
+                </svg>
+                <h2>輸入股票代碼，開始分析</h2>
+                <p>支援台灣上市 / 上櫃股票，自動計算關鍵一條線、10MA 乖離與進場訊號</p>
+                <div class="quick-picks">
+                    <span>熱門：</span>
+                    <button class="quick-btn" data-code="2330">2330 台積電</button>
+                    <button class="quick-btn" data-code="2317">2317 鴻海</button>
+                    <button class="quick-btn" data-code="2454">2454 聯發科</button>
+                    <button class="quick-btn" data-code="2603">2603 長榮</button>
+                    <button class="quick-btn" data-code="0050">0050 元大50</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart + Analysis Layout -->
+        <div id="app-layout" class="app-layout hidden">
+            <div class="chart-section">
+                <div id="chart-container" class="chart-container">
+                    <div id="chart-loading" class="chart-loading hidden">
+                        <div class="spinner"></div>
+                        <span>載入資料中…</span>
+                    </div>
+                </div>
+            </div>
+            <aside class="analysis-sidebar">
+                <!-- Company & Score Card -->
+                <div class="card" id="company-card">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#22c55e" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                        <span>公司簡介與技術評分</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-row" style="margin-bottom:0.5rem; align-items:flex-end;">
+                            <span>綜合評分 (滿分100)</span>
+                            <span id="stock-score" style="font-size:1.8rem; font-weight:800; color:var(--accent-green); font-family:var(--font-mono); line-height:1;">—</span>
+                        </div>
+                        <div id="trend-tags" style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
+                            <span id="tag-strategy" title="目前最符合當下行情的主導量化策略" style="background:rgba(59,130,246,0.15); color:#60a5fa; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.75rem; cursor:help;">策略載入中</span>
+                            <span id="tag-health" title="判斷短線是否過熱 (RSI>75) 或跌破重要月線支撐" style="background:rgba(34,197,94,0.15); color:#4ade80; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.75rem; cursor:help;">趨勢載入中</span>
+                        </div>
+                        <div class="score-bars" id="score-bars-container" style="display:none;">
+                            <div class="score-item" title="基於是否為權值股與長線趨勢估算">
+                                <span>基本面</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="score-fund-fill"></div></div>
+                                <span class="score-val" id="score-fund-val">0</span>
+                            </div>
+                            <div class="score-item" title="基於關鍵線、K線型態與均線結構">
+                                <span>技術面</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="score-tech-fill"></div></div>
+                                <span class="score-val" id="score-tech-val">0</span>
+                            </div>
+                            <div class="score-item" title="由近期價量配合度推估大戶動向">
+                                <span>籌碼面</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="score-chip-fill"></div></div>
+                                <span class="score-val" id="score-chip-val">0</span>
+                            </div>
+                        </div>
+                        <p id="company-desc" style="font-size:0.8rem; color:var(--text-secondary); line-height:1.6; margin:0;">載入中...</p>
+                    </div>
+                </div>
+
+                <!-- Key Line Card -->
+                <div class="card" id="keyline-card">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f59e0b" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="3" fill="#f59e0b"/></svg>
+                        <span>關鍵一條線</span>
+                    </div>
+                    <div class="card-body" id="keyline-body">
+                        <div class="metric-big" id="keyline-price">—</div>
+                        <div class="metric-sub" id="keyline-date"></div>
+                        <div class="metric-row">
+                            <span>與現價距離</span>
+                            <span id="keyline-deviation">—</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>觸發漲幅</span>
+                            <span id="keyline-gain">—</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>歷史訊號數</span>
+                            <span id="keyline-count">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 10MA Card -->
+                <div class="card" id="ma-card">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#3b82f6" stroke-width="2"><polyline points="3,17 9,11 13,15 21,7"/></svg>
+                        <span>10MA 分析</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-row">
+                            <span>10MA 現值</span>
+                            <span id="ma-value">—</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>均線方向</span>
+                            <span id="ma-direction">—</span>
+                        </div>
+                        <div class="metric-row">
+                            <span>乖離率</span>
+                            <span id="ma-deviation">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Signal Card -->
+                <div class="card" id="signal-card">
+                    <div class="card-header">
+                        <div style="display:flex; align-items:center; gap:0.4rem;" title="系統綜合評估後給出的當前最佳動作建議">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#a78bfa" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                            <span style="cursor:help;">操作訊號</span>
+                        </div>
+                        <span id="atr-value" title="ATR (平均真實波幅): 衡量近期股價波動大小的指標，用來設定動態停損" style="font-size:0.75rem; color:var(--text-secondary); font-family:var(--font-mono); cursor:help;">ATR: —</span>
+                    </div>
+                    <div class="card-body">
+                        <div id="signal-badge" class="signal-badge">等待分析</div>
+                        <div id="signal-detail" class="signal-detail" style="margin-bottom:0.8rem;"></div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; display:none;" id="atr-box">
+                            <div title="以進場防守點為基準，向下減去 1.5 倍的 ATR 作為強制出場點" style="background:rgba(239,68,68,0.1); padding:0.5rem; border-radius:4px; text-align:center; cursor:help;">
+                                <div style="font-size:0.7rem; color:#fca5a5; margin-bottom:0.2rem;">建議停損 (-1.5ATR)</div>
+                                <div id="stop-loss-val" style="font-family:var(--font-mono); font-weight:600; color:#ef4444;">—</div>
+                            </div>
+                            <div title="以現價或進場點為基準，向上加上 3.0 倍的 ATR 作為目標停利點 (確保賺賠比 2:1)" style="background:rgba(34,197,94,0.1); padding:0.5rem; border-radius:4px; text-align:center; cursor:help;">
+                                <div style="font-size:0.7rem; color:#86efac; margin-bottom:0.2rem;">預期停利 (+3.0ATR)</div>
+                                <div id="take-profit-val" style="font-family:var(--font-mono); font-weight:600; color:#22c55e;">—</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Elimination Card -->
+                <div class="card" id="elim-card" style="display:none;">
+                    <div class="card-header warning">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f97316" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        <span>剔除警告</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="elim-text">此股票在觀察期間內<strong>無法畫出關鍵一條線</strong>，建議從選股名單中移除。</p>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Bottom Analysis Tabs -->
+        <div id="bottom-panel" class="bottom-panel hidden">
+            <div class="tab-bar">
+                <button class="tab-btn active" data-tab="analysis">📊 綜合分析</button>
+                <button class="tab-btn" data-tab="history">📋 訊號歷史</button>
+                <button class="tab-btn" data-tab="links">🔗 延伸資訊</button>
+            </div>
+            <div class="tab-content">
+                <div id="tab-analysis" class="tab-pane active">
+                    <div id="analysis-text" class="analysis-text"></div>
+                </div>
+                <div id="tab-history" class="tab-pane">
+                    <div id="history-table-wrap"></div>
+                </div>
+                <div id="tab-links" class="tab-pane">
+                    <div id="links-content" class="links-grid"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ===== TOAST ===== -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <footer id="app-footer">
+        <span>技術分析僅供參考，不構成投資建議。投資有風險，請謹慎評估。</span>
+    </footer>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
