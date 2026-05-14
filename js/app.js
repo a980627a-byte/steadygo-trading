@@ -37,6 +37,83 @@ let chart = null, candleSeries = null, volumeSeries = null;
 let ma10Series = null, ma5Series = null, ma20Series = null;
 let keylineLines = [];
 let currentData = null;
+let intradayMode = false;
+let intradayTimer = null;
+
+// ── 籌碼面資料抓取 (FinMind API) ──
+async function fetchFinMindChipData(stockCode) {
+  // 動態推算日期：涵蓋過去 7 天以確保抓到最近一個交易日
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(endDate.getDate() - 7);
+
+  const formatDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const startStr = formatDate(startDate);
+  const endStr = formatDate(endDate);
+
+  const instUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id=${stockCode}&start_date=${startStr}&end_date=${endStr}`;
+  const marginUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&data_id=${stockCode}&start_date=${startStr}&end_date=${endStr}`;
+
+  try {
+    const [instRes, marginRes] = await Promise.all([
+      fetch(instUrl, { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => ({})),
+      fetch(marginUrl, { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => ({}))
+    ]);
+
+    let instData = null;
+    let marginData = null;
+
+    if (instRes.msg === 'success' && instRes.data && instRes.data.length > 0) {
+      // 找出最近的一個交易日
+      const latestDate = instRes.data[instRes.data.length - 1].date;
+      const latestRecords = instRes.data.filter(r => r.date === latestDate);
+      
+      let foreign = 0, trust = 0, dealer = 0;
+      latestRecords.forEach(r => {
+        const net = r.buy - r.sell;
+        if (r.name.startsWith('Foreign_Investor')) foreign += net;
+        else if (r.name === 'Investment_Trust') trust += net;
+        else if (r.name.startsWith('Dealer')) dealer += net;
+      });
+      
+      instData = {
+        date: latestDate.replace(/-/g, ''), // 轉為 YYYYMMDD
+        foreign,
+        trust,
+        dealer,
+        total: foreign + trust + dealer
+      };
+    }
+
+    if (marginRes.msg === 'success' && marginRes.data && marginRes.data.length > 0) {
+      const latest = marginRes.data[marginRes.data.length - 1];
+      marginData = {
+        date: latest.date.replace(/-/g, ''), // 轉為 YYYYMMDD
+        // FinMind 融資融券單位為「張」，配合前端 fmtShares 函式轉為「股」
+        marginBuy: latest.MarginPurchaseBuy * 1000,
+        marginSell: latest.MarginPurchaseSell * 1000,
+        marginNet: (latest.MarginPurchaseTodayBalance - latest.MarginPurchaseYesterdayBalance) * 1000,
+        marginBal: latest.MarginPurchaseTodayBalance * 1000,
+        shortBuy: latest.ShortSaleBuy * 1000,
+        shortSell: latest.ShortSaleSell * 1000,
+        shortNet: (latest.ShortSaleTodayBalance - latest.ShortSaleYesterdayBalance) * 1000,
+        shortBal: latest.ShortSaleTodayBalance * 1000
+      };
+    }
+
+    return { instData, marginData };
+  } catch (err) {
+    console.error('FinMind API Error:', err);
+    return { instData: null, marginData: null };
+  }
+}
+
+function fmtShares(shares) {
+  // 轉為張數（1張=1000股）並格式化
+  const lots = Math.round(shares / 1000);
+  if (Math.abs(lots) >= 10000) return (lots / 10000).toFixed(1) + '萬';
+  return lots.toLocaleString();
+}
 
 // ═══ 工具函式 ═══
 const fmt  = v => Number.isFinite(v) ? v.toFixed(2) : '—';
@@ -89,7 +166,7 @@ const BUILTIN_NAMES = {
   '2884':'玉山金','2885':'元大金','2886':'兆豐金','2887':'台新金','2888':'新光金',
   '2889':'國票金','2890':'永豐金','2891':'中信金','2892':'第一金','2912':'統一超',
   '3008':'大立光','3034':'聯詠','3037':'欣興','3044':'健鼎','3189':'景碩',
-  '3231':'緯創','3443':'創意','3481':'群創','3529':'力旺','3532':'台胜科',
+  '3231':'緯創','3443':'創意','3481':'群創','3529':'力旺','3532':'台勝科',
   '3661':'世芯-KY','3665':'貿聯-KY','3669':'圓展','3706':'神達',
   '3711':'日月光投控','4904':'遠傳','4938':'和碩','5269':'祥碩','5274':'信驊',
   '5347':'世界','5871':'中租-KY','5876':'上海商銀','5880':'合庫金',
@@ -314,7 +391,7 @@ function calcKeylines(rows, lookback, minGainPct) {
   return triggers;
 }
 
-function analyzeSignal(rows, triggers, nearPct) {
+function analyzeSignal(rows, triggers, nearPct, instData = null) {
   const last = rows[rows.length - 1];
   const lastIdx = rows.length - 1;
   const ma5 = calcMA(rows, 5);
@@ -409,18 +486,30 @@ function analyzeSignal(rows, triggers, nearPct) {
   if (ma60[lastIdx] && last.close > ma60[lastIdx]) fund += 10;
   if (ma120[lastIdx] && last.close > ma120[lastIdx]) fund += 10;
 
-  // 3. 籌碼面 (價量配合度估算)
+  // 3. 籌碼面 (優先使用三大法人真實數據，fallback 到價量估算)
   let chip = 50;
-  const last5 = rows.slice(-5);
-  let upVol = 0, downVol = 0;
-  last5.forEach(r => {
-    if (r.close > r.open) upVol += r.volume || 0;
-    else downVol += r.volume || 0;
-  });
-  if (upVol > downVol * 1.5) chip = 90;
-  else if (upVol > downVol) chip = 70;
-  else if (upVol < downVol * 0.5) chip = 30;
-  else chip = 50;
+  if (instData) {
+    // 基底 50 分
+    chip = 50;
+    if (instData.total > 0) chip += 25;        // 法人合計買超
+    else if (instData.total < 0) chip -= 15;   // 法人合計賣超
+    if (instData.foreign > 0) chip += 15;      // 外資買超
+    if (instData.trust > 0) chip += 15;        // 投信買超
+    if (instData.foreign > 0 && instData.trust > 0) chip += 10; // 雙法人共振
+    if (instData.foreign < 0 && instData.trust < 0) chip -= 15; // 雙法人同步賣超
+  } else {
+    // fallback: 原有價量配合度估算
+    const last5 = rows.slice(-5);
+    let upVol = 0, downVol = 0;
+    last5.forEach(r => {
+      if (r.close > r.open) upVol += r.volume || 0;
+      else downVol += r.volume || 0;
+    });
+    if (upVol > downVol * 1.5) chip = 90;
+    else if (upVol > downVol) chip = 70;
+    else if (upVol < downVol * 0.5) chip = 30;
+    else chip = 50;
+  }
 
   info.scores = {
     fund: Math.min(100, Math.max(0, fund)),
@@ -470,6 +559,340 @@ function analyzeSignal(rows, triggers, nearPct) {
   }
   return info;
 }
+
+// ═══ 盤中模式分析 ═══
+function isMarketHours() {
+  const now = new Date();
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false; // 週末
+  const h = now.getHours(), m = now.getMinutes();
+  const mins = h * 60 + m;
+  return mins >= 9 * 60 && mins <= 13 * 60 + 30; // 09:00 ~ 13:30
+}
+
+function analyzeIntraday(rows, triggers, atr) {
+  if (triggers.length === 0 || rows.length < 20) return null;
+
+  const lastIdx = rows.length - 1;
+  const last = rows[lastIdx];
+  const active = triggers[triggers.length - 1];
+  const keyPrice = active.price;
+
+  // 計算技術指標
+  const ma10 = calcMA(rows, 10);
+  const ma10Up = ma10[lastIdx] > ma10[lastIdx - 1];
+  
+  const vols = rows.map(r => r.volume || 0);
+  const vma5 = vols.slice(-5).reduce((a,b)=>a+b,0) / 5;
+  
+  const rsi14Arr = calcRSI(rows, 14);
+  const rsi14 = rsi14Arr[lastIdx];
+
+  // ① 價格與趨勢 (35分)
+  const distPct = ((last.close - keyPrice) / keyPrice) * 100;
+  let s1 = 0;
+  if (distPct >= 0 && distPct <= 3) {
+    s1 = ma10Up ? 35 : 15; // 接近買點且均線向上拿滿分，否則大扣分
+  } else if (distPct < 0 && distPct >= -1.5) {
+    s1 = ma10Up ? 20 : 0; // 假跌破必須均線向上才安全
+  } else {
+    s1 = 0;
+  }
+
+  // ② 量能結構 (25分)
+  let s2 = 0;
+  if (last.volume > 0 && vma5 > 0) {
+    const volRatio = last.volume / vma5;
+    if (volRatio < 0.8) s2 = 25;        // 量縮回測 (低於5日均量80%)
+    else if (volRatio <= 1.2) s2 = 15;   // 量能適中
+    else if (last.close > last.open) s2 = 10; // 爆量但收紅 (有承接)
+    else s2 = 0;                          // 爆量下殺
+  }
+
+  // ③ 買黑不買紅 (25分)
+  let s3 = 0;
+  const isRed = last.close > last.open;
+  // K棒實體大小 (判斷是否為大長黑)
+  const bodyPct = Math.abs(last.close - last.open) / last.open * 100;
+  // 下影線長度大於 0.5% 視為有效測支撐
+  const lowerShadowPct = (Math.min(last.open, last.close) - last.low) / last.low * 100;
+  const hasLowerShadow = lowerShadowPct > 0.5;
+
+  if (!isRed) {
+    // 嚴格遵守「黑K進場」
+    if (hasLowerShadow) s3 = 25;       // 黑K帶下影線：完美測支撐
+    else if (bodyPct < 2.0) s3 = 20;   // 實體小黑K：量縮整理無賣壓
+    else s3 = 0;                       // 實體長大黑：賣壓沉重，不接刀
+  } else {
+    // 買黑不買紅：遇到紅K原則上不追高
+    if (hasLowerShadow && distPct <= 1.5) s3 = 10; // 緊貼關鍵線的紅K帶下影，勉強給一點分
+    else s3 = 0; // 其餘紅K皆為 0 分，拒絕追高
+  }
+
+  // ④ 動能指標 (15分)
+  let s4 = 0;
+  if (rsi14 >= 50) s4 = 15;       // 多方控盤
+  else if (rsi14 >= 40) s4 = 10;  // 趨勢偏弱但未完全破壞
+  else s4 = 0;                    // 空方主導
+
+  let total = s1 + s2 + s3 + s4;
+
+  // 絕對安全機制：跌破超過 2 倍 ATR 直接判定不宜進場
+  const absBreak = keyPrice - (2 * atr);
+  if (last.close < absBreak) {
+    total = 0;
+    s1 = 0; s2 = 0; s3 = 0; s4 = 0;
+  }
+
+  // 判定結果
+  let signal, signalClass, detail;
+  if (total >= 80) {
+    signal = '🔴 盤中強力買點';
+    signalClass = 'intra-strong';
+    detail = `評分 ${total} 分！完美符合「量縮回測+均線向上+紅K支撐」的高勝率買點。`;
+  } else if (total >= 60) {
+    signal = '🟡 盤中觀察中';
+    signalClass = 'intra-watch';
+    detail = `評分 ${total} 分，型態不錯但少數條件未到位，建議等收盤確認再決定。`;
+  } else if (total >= 40) {
+    signal = '🟦 暫時觀望';
+    signalClass = 'intra-wait';
+    detail = `評分 ${total} 分，條件不足 (可能跌破均線或量能失控)，建議等待更好時機。`;
+  } else {
+    signal = '⚫ 盤中不宜進場';
+    signalClass = 'intra-danger';
+    detail = `評分 ${total} 分，趨勢轉弱且無支撐，風險極高，絕對不要接刀。`;
+  }
+
+  return { s1, s2, s3, s4, total, signal, signalClass, detail, distPct };
+}
+
+function updateIntradayCard(data, triggers, atr) {
+  const card = $('intraday-card');
+  if (!intradayMode || !data || triggers.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+
+  const result = analyzeIntraday(data.rows, triggers, atr);
+  if (!result) { card.style.display = 'none'; return; }
+
+  // 更新時間
+  const now = new Date();
+  $('intraday-time').textContent = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+  // 訊號 badge
+  const badge = $('intraday-badge');
+  badge.textContent = result.signal;
+  badge.className = `signal-badge ${result.signalClass}`;
+
+  // 總分
+  const scoreEl = $('intraday-total-score');
+  scoreEl.textContent = result.total;
+  scoreEl.style.color = result.total >= 80 ? '#f472b6' : result.total >= 60 ? '#fbbf24' : result.total >= 40 ? '#60a5fa' : '#9ca3af';
+
+  // 四大評分條
+  const maxScores = [35, 25, 25, 15];
+  const scores = [result.s1, result.s2, result.s3, result.s4];
+  for (let i = 0; i < 4; i++) {
+    const fillEl = $(`intra-s${i+1}-fill`);
+    const valEl = $(`intra-s${i+1}-val`);
+    const pct = (scores[i] / maxScores[i]) * 100;
+    fillEl.style.width = pct + '%';
+    fillEl.style.backgroundColor = pct >= 80 ? '#f472b6' : pct >= 50 ? '#fbbf24' : '#60a5fa';
+    valEl.textContent = scores[i];
+  }
+
+  // 詳細說明
+  $('intraday-detail').textContent = result.detail;
+}
+
+// ═══ 首頁掃描推薦 ═══
+let scanAborted = false;
+
+async function loadAllStockCodes() {
+  const codes = new Set();
+
+  // 1. 優先使用已載入的 twseNameMap（DOMContentLoaded 時載入）
+  if (twseNameMap && Object.keys(twseNameMap).length > 0) {
+    Object.keys(twseNameMap).forEach(code => {
+      if (/^\d{4,6}$/.test(code)) codes.add(code);
+    });
+  }
+
+  // 2. 如果 twseNameMap 太少或為空，透過 CORS proxy 再次取得 TWSE 資料
+  if (codes.size < 100) {
+    const twseUrls = [
+      'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+      `https://corsproxy.io/?${encodeURIComponent('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')}`,
+      `https://api.allorigins.win/get?url=${encodeURIComponent('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')}`
+    ];
+    for (const url of twseUrls) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+        if (!res.ok) continue;
+        let arr = await res.json();
+        if (arr.contents) arr = JSON.parse(arr.contents); // allorigins wrapper
+        arr.forEach(item => {
+          if (item.Code && /^\d{4,6}$/.test(item.Code)) codes.add(item.Code);
+        });
+        if (codes.size > 100) break; // 成功取得，跳出
+      } catch(_) {}
+    }
+  }
+
+  // 3. 透過 CORS proxy 取得 TPEX（上櫃）股票
+  const tpexUrls = [
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_L',
+    `https://corsproxy.io/?${encodeURIComponent('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_L')}`,
+    `https://api.allorigins.win/get?url=${encodeURIComponent('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_L')}`
+  ];
+  for (const url of tpexUrls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (!res.ok) continue;
+      let arr = await res.json();
+      if (arr.contents) arr = JSON.parse(arr.contents);
+      const before = codes.size;
+      arr.forEach(item => {
+        const code = item.SecuritiesCompanyCode || item['公司代號'] || item.code;
+        if (code && /^\d{4,6}$/.test(code.trim())) codes.add(code.trim());
+      });
+      if (codes.size > before) break; // 成功取得，跳出
+    } catch(_) {}
+  }
+
+  // 4. 加入內建對照表的股票（確保常見股不遺漏）
+  Object.keys(BUILTIN_NAMES).forEach(code => codes.add(code));
+
+  // 5. 過濾 ETF（代碼以 00 開頭），只保留 0050
+  const filtered = [...codes].filter(code => {
+    if (code.startsWith('00') && code !== '0050') return false;
+    return true;
+  });
+
+  return filtered.sort((a,b) => a.localeCompare(b));
+}
+
+async function scanStocks() {
+  const scanBtn = $('scan-btn');
+  const progressEl = $('scan-progress');
+  const progressFill = $('scan-progress-fill');
+  const progressText = $('scan-progress-text');
+  const resultsEl = $('scan-results');
+  const statsEl = $('scan-stats');
+
+  scanAborted = false;
+  scanBtn.textContent = '停止掃描';
+  scanBtn.disabled = false;
+  scanBtn.onclick = () => { scanAborted = true; };
+  progressEl.classList.remove('hidden');
+  resultsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:1rem;">正在載入全部股票清單…</p>';
+  if (statsEl) statsEl.textContent = '';
+
+  // 載入所有股票代碼
+  const allCodes = await loadAllStockCodes();
+  const total = allCodes.length;
+  toast(`📋 已取得 ${total} 檔股票，開始掃描…`, 'info');
+  resultsEl.innerHTML = '';
+
+  const results = [];
+  let scanned = 0, found = 0, failed = 0;
+  const BATCH_SIZE = 3; // 3 路平行
+
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    if (scanAborted) break;
+
+    const batch = allCodes.slice(i, i + BATCH_SIZE);
+    const promises = batch.map(async (code) => {
+      try {
+        const data = await fetchStock(code, '3mo');
+        const lookback = 20, threshold = 4, nearPct = 3;
+        const triggers = calcKeylines(data.rows, lookback, threshold);
+        if (triggers.length === 0) return;
+
+        const analysis = analyzeSignal(data.rows, triggers, nearPct);
+        const intResult = analyzeIntraday(data.rows, triggers, analysis.atr);
+        if (!intResult || intResult.total < 40) return; // 只收 >= 40 分
+
+        const last = data.rows[data.rows.length - 1];
+        results.push({
+          code, name: data.name, price: last.close,
+          score: intResult.total, signal: intResult.signal,
+          signalClass: intResult.signalClass, detail: intResult.detail,
+          instTotal: null // 改為點擊個股時即時載入，掃描清單暫不顯示
+        });
+        found++;
+      } catch(_) { failed++; }
+    });
+
+    await Promise.allSettled(promises);
+    scanned += batch.length;
+
+    // 更新進度
+    const pct = Math.min(100, (scanned / total * 100));
+    progressFill.style.width = pct + '%';
+    const currentCode = batch[batch.length - 1];
+    const currentName = getChineseName(currentCode) || '';
+    progressText.textContent = `${scanned}/${total} (${currentCode} ${currentName}) — 已找到 ${found} 檔`;
+
+    // 即時更新結果排序
+    if (results.length > 0) {
+      results.sort((a,b) => b.score - a.score);
+      renderScanResults(results, resultsEl);
+      sessionStorage.setItem('scanResults', JSON.stringify(results));
+    }
+  }
+
+  progressEl.classList.add('hidden');
+  scanBtn.textContent = '重新掃描';
+  scanBtn.disabled = false;
+  scanBtn.onclick = () => scanStocks();
+
+  if (results.length === 0) {
+    resultsEl.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:1rem;">目前無符合條件的股票（評分 ≥ 40）</p>';
+  }
+
+  // 更新統計
+  if (statsEl) {
+    statsEl.textContent = `共掃描 ${scanned} 檔 ｜ 符合 ${found} 檔 ｜ 失敗 ${failed} 檔`;
+    sessionStorage.setItem('scanStats', statsEl.textContent);
+  }
+  sessionStorage.setItem('scanResults', JSON.stringify(results));
+
+  toast(scanAborted ? `⏹ 已手動停止，找到 ${found} 檔` : `✓ 掃描完成，${found} 檔符合條件`, 'success');
+}
+
+function renderScanResults(results, container) {
+  container.innerHTML = results.map(r => {
+    const scoreColor = r.score >= 80 ? '#f472b6' : r.score >= 60 ? '#fbbf24' : r.score >= 40 ? '#60a5fa' : '#9ca3af';
+    return `<div class="scan-card" data-code="${r.code}">
+      <div class="scan-card-top">
+        <div class="scan-stock-info">
+          <span class="scan-code">${r.code}</span>
+          <span class="scan-name">${r.name}</span>
+        </div>
+        <div class="scan-score" style="color:${scoreColor}">${r.score}</div>
+      </div>
+      <div class="scan-signal ${r.signalClass}">${r.signal}</div>
+      <div class="scan-card-bottom">
+        <span class="scan-price">${fmt(r.price)}</span>
+        ${r.instTotal !== null && r.instTotal !== undefined ? `<span class="scan-inst ${r.instTotal > 0 ? 'buy' : r.instTotal < 0 ? 'sell' : 'neutral'}">${r.instTotal > 0 ? '▲' : r.instTotal < 0 ? '▼' : '—'} 法人${fmtShares(r.instTotal)}張</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // 綁定點擊事件
+  container.querySelectorAll('.scan-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const code = card.dataset.code;
+      stockInput.value = code;
+      loadStock(code);
+    });
+  });
+}
+
 
 // ═══ 圖表渲染 ═══
 function initChart() {
@@ -677,6 +1100,165 @@ function updateSidebar(data, triggers, analysis) {
   } else {
     $('atr-box').style.display = 'none';
   }
+
+  // 三大法人動態卡片更新
+  updateInstCard(data.code);
+}
+
+async function updateInstCard(stockCode) {
+  const card = $('inst-card');
+  const errEl = $('inst-error');
+
+  // 顯示 Loading 狀態
+  card.style.display = 'block';
+  errEl.style.display = 'none';
+  ['inst-foreign','inst-trust','inst-dealer','inst-total', 'margin-bal', 'margin-chg', 'short-bal', 'short-chg', 'margin-ratio'].forEach(id => {
+    const el = $(id);
+    if (el) { el.textContent = '載入中...'; el.className = 'inst-value neutral'; }
+  });
+  $('inst-date').textContent = '讀取中';
+  if ($('inst-analysis')) $('inst-analysis').textContent = '正在分析籌碼動態...';
+
+  const { instData, marginData } = await fetchFinMindChipData(stockCode);
+
+  if (!instData && !marginData) {
+    // 兩者都無法取得：顯示卡片但標記錯誤
+    errEl.style.display = 'block';
+    ['inst-foreign','inst-trust','inst-dealer','inst-total', 'margin-bal', 'margin-chg', 'short-bal', 'short-chg', 'margin-ratio'].forEach(id => {
+      const el = $(id);
+      if (el) { el.textContent = '—'; el.className = 'inst-value neutral'; }
+    });
+    $('inst-date').textContent = '';
+    if ($('inst-analysis')) $('inst-analysis').textContent = '資料不足，無法判定';
+    return;
+  }
+
+  const setInstVal = (id, shares) => {
+    const el = $(id);
+    if (!el) return;
+    if (shares === null || shares === undefined) {
+      el.textContent = '—';
+      el.className = 'inst-value neutral';
+      return;
+    }
+    const lots = Math.round(shares / 1000);
+    const prefix = lots > 0 ? '+' : '';
+    el.textContent = prefix + fmtShares(shares) + ' 張';
+    el.className = 'inst-value ' + (lots > 0 ? 'buy' : lots < 0 ? 'sell' : 'neutral');
+  };
+
+  const setBalVal = (id, shares) => {
+    const el = $(id);
+    if (!el) return;
+    if (shares === null || shares === undefined) {
+      el.textContent = '—';
+      el.className = 'inst-value neutral';
+      return;
+    }
+    el.textContent = fmtShares(shares) + ' 張';
+    el.className = 'inst-value'; // 餘額不特別標顏色
+  };
+
+  if (instData) {
+    setInstVal('inst-foreign', instData.foreign);
+    setInstVal('inst-trust', instData.trust);
+    setInstVal('inst-dealer', instData.dealer);
+    setInstVal('inst-total', instData.total);
+  } else {
+    ['inst-foreign','inst-trust','inst-dealer','inst-total'].forEach(id => setInstVal(id, null));
+  }
+
+  if (marginData) {
+    const marginNet = marginData.marginNet;
+    const shortNet = marginData.shortNet;
+    
+    setBalVal('margin-bal', marginData.marginBal);
+    setInstVal('margin-chg', marginNet);
+    setBalVal('short-bal', marginData.shortBal);
+    setInstVal('short-chg', shortNet);
+
+    const ratioEl = $('margin-ratio');
+    if (ratioEl && marginData.marginBal > 0) {
+      const ratio = (marginData.shortBal / marginData.marginBal) * 100;
+      ratioEl.textContent = ratio.toFixed(2) + '%';
+      ratioEl.className = 'inst-value ' + (ratio > 10 ? 'buy' : 'neutral'); // 券資比高容易軋空
+    } else if (ratioEl) {
+      ratioEl.textContent = '—';
+      ratioEl.className = 'inst-value neutral';
+    }
+  } else {
+    ['margin-bal', 'short-bal'].forEach(id => setBalVal(id, null));
+    ['margin-chg', 'short-chg'].forEach(id => setInstVal(id, null));
+    if ($('margin-ratio')) {
+      $('margin-ratio').textContent = '—';
+      $('margin-ratio').className = 'inst-value neutral';
+    }
+  }
+
+  // 日期
+  const dataDate = (instData && instData.date) || (marginData && marginData.date);
+  if (dataDate) {
+    $('inst-date').textContent = `${dataDate.slice(0,4)}/${dataDate.slice(4,6)}/${dataDate.slice(6,8)}`;
+  }
+
+  // 籌碼綜合判定
+  const analysisEl = $('inst-analysis');
+  if (analysisEl) {
+    if (!instData && !marginData) {
+      analysisEl.textContent = '資料不足，無法判定';
+    } else {
+      let text = '';
+      let score = 0;
+
+      if (instData) {
+        if (instData.total > 0) {
+          text += '法人偏多操作。';
+          score += 1;
+        } else if (instData.total < 0) {
+          text += '法人偏空操作。';
+          score -= 1;
+        } else {
+          text += '法人動向不明。';
+        }
+        
+        if (instData.foreign > 0 && instData.trust > 0) {
+          text += '土洋同買，籌碼穩定。';
+          score += 1;
+        } else if (instData.foreign < 0 && instData.trust < 0) {
+          text += '土洋同賣，賣壓沉重。';
+          score -= 1;
+        }
+      }
+
+      if (marginData) {
+        const marginNet = marginData.marginNet;
+        if (marginNet > 0) {
+          text += '散戶融資進場，';
+          score -= 1;
+        } else if (marginNet < 0) {
+          text += '融資減肥，浮額洗淨。';
+          score += 1;
+        }
+
+        if (marginData.marginBal > 0) {
+          const ratio = (marginData.shortBal / marginData.marginBal) * 100;
+          if (ratio > 10) {
+            text += '券資比高，具軋空契機。';
+            score += 1;
+          }
+        }
+      }
+
+      if (score >= 2) {
+        analysisEl.innerHTML = `<span style="color:#ef4444; font-weight:bold;">【偏多】</span> ${text}可尋找進場契機。`;
+      } else if (score <= -1) {
+        analysisEl.innerHTML = `<span style="color:#22c55e; font-weight:bold;">【偏空】</span> ${text}建議觀望。`;
+      } else {
+        analysisEl.innerHTML = `<span style="color:#f59e0b; font-weight:bold;">【中性】</span> ${text}短線震盪。`;
+      }
+    }
+  }
+  return instData;
 }
 
 function buildAnalysisTab(data, triggers, analysis) {
@@ -792,6 +1374,34 @@ async function loadStock(input) {
     buildLinksTab(code);
     bottomPanel.classList.remove('hidden');
 
+    // 盤中模式分析
+    updateIntradayCard(data, triggers, analysis.atr);
+
+    // 存儲以便盤中自動刷新
+    currentData = data;
+    currentData._triggers = triggers;
+    currentData._atr = analysis.atr;
+
+    // 非同步載入三大法人與融資融券資料（不阻塞主流程）
+    updateInstCard(code).then(instData => {
+      // 如果法人數據到位，重新計算 chip 評分並更新側邊欄
+      if (instData) {
+        // 暫存法人資料供 analyzeSignal 使用
+        currentData._instData = instData;
+        const newAnalysis = analyzeSignal(data.rows, triggers, nearPct, instData);
+        const setBar = (id, val) => {
+          $(id+'-val').textContent = val;
+          const fill = $(id+'-fill');
+          fill.style.width = val + '%';
+          fill.style.backgroundColor = val >= 80 ? '#ef4444' : val >= 60 ? '#f59e0b' : '#22c55e';
+        };
+        setBar('score-chip', newAnalysis.scores.chip);
+        const t = newAnalysis.scores.total;
+        $('stock-score').textContent = t;
+        $('stock-score').style.color = t >= 80 ? '#ef4444' : t >= 60 ? '#f59e0b' : '#22c55e';
+      }
+    }).catch(console.error);
+
   } catch (err) {
     toast(err.message || '載入失敗', 'error');
     appLayout.classList.add('hidden');
@@ -837,9 +1447,69 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// ═══ 頁面載入時背景載入中文名稱 ═══
+// ═══ 盤中模式切換 ═══
+const intradayCheckbox = $('intraday-checkbox');
+const intradayToggle = $('intraday-toggle');
+
+intradayCheckbox.addEventListener('change', () => {
+  intradayMode = intradayCheckbox.checked;
+  intradayToggle.classList.toggle('active', intradayMode);
+  document.body.classList.toggle('intraday-active', intradayMode);
+
+  if (intradayMode) {
+    toast('🕒 盤中模式已啟動，每 60 秒自動刷新', 'success');
+    // 立即分析
+    if (currentData && currentData._triggers) {
+      updateIntradayCard(currentData, currentData._triggers, currentData._atr);
+    }
+    // 定時自動刷新
+    intradayTimer = setInterval(() => {
+      const code = stockInput.value.trim();
+      if (code && intradayMode && isMarketHours()) {
+        loadStock(code);
+      }
+    }, 60000); // 60 秒
+  } else {
+    toast('盤中模式已關閉', 'info');
+    if (intradayTimer) { clearInterval(intradayTimer); intradayTimer = null; }
+    $('intraday-card').style.display = 'none';
+  }
+});
+
+// ═══ 頁面載入時背景載入中文名稱 & 掃描按鈕 ═══
 window.addEventListener('DOMContentLoaded', () => {
   loadTWSENames();
+
+  // 掃描按鈕
+  const scanBtn = $('scan-btn');
+  if (scanBtn) {
+    scanBtn.addEventListener('click', () => scanStocks());
+  }
+
+  // 點擊 Logo 回到首頁 (保留掃描結果)
+  const logo = document.querySelector('.logo');
+  if (logo) {
+    logo.style.cursor = 'pointer';
+    logo.addEventListener('click', () => {
+      $('app-layout').classList.add('hidden');
+      $('welcome-screen').classList.remove('hidden');
+    });
+  }
+
+  // 恢復上次掃描結果
+  try {
+    const savedResults = sessionStorage.getItem('scanResults');
+    const savedStats = sessionStorage.getItem('scanStats');
+    if (savedResults) {
+      const results = JSON.parse(savedResults);
+      if (results && results.length > 0) {
+        renderScanResults(results, $('scan-results'));
+      }
+    }
+    if (savedStats && $('scan-stats')) {
+      $('scan-stats').textContent = savedStats;
+    }
+  } catch(e) {}
 });
 
 })();
