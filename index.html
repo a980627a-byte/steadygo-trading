@@ -34,6 +34,13 @@
             </div>
         </div>
         <div class="header-right">
+            <div class="intraday-toggle" id="intraday-toggle" title="盤中模式：評估當前盤中價格是否適合進場">
+                <span class="toggle-label">盤中</span>
+                <div class="toggle-switch">
+                    <input type="checkbox" id="intraday-checkbox">
+                    <label for="intraday-checkbox" class="toggle-slider"></label>
+                </div>
+            </div>
             <button id="settings-toggle" class="icon-btn" title="設定">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
@@ -90,6 +97,21 @@
                     <button class="quick-btn" data-code="2603">2603 長榮</button>
                     <button class="quick-btn" data-code="0050">0050 元大50</button>
                 </div>
+            </div>
+
+            <!-- 盤中推薦掃描 -->
+            <div id="scan-section" class="scan-section">
+                <div class="scan-header">
+                    <h3>🔥 盤中高分推薦</h3>
+                    <button id="scan-btn" class="scan-btn">開始掃描</button>
+                </div>
+                <p class="scan-desc">自動掃描熱門股票，找出盤中評分最高的進場機會</p>
+                <div id="scan-progress" class="scan-progress hidden">
+                    <div class="scan-progress-bar"><div id="scan-progress-fill" class="scan-progress-fill"></div></div>
+                    <span id="scan-progress-text">掃描中...</span>
+                </div>
+                <div id="scan-stats" class="scan-stats"></div>
+                <div id="scan-results" class="scan-results"></div>
             </div>
         </div>
 
@@ -208,6 +230,103 @@
                                 <div id="take-profit-val" style="font-family:var(--font-mono); font-weight:600; color:#22c55e;">—</div>
                             </div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Institutional Investors & Margin Card -->
+                <div class="card" id="inst-card" style="display:none;">
+                    <div class="card-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        <span>籌碼面總覽</span>
+                        <span id="inst-date" style="margin-left:auto; font-size:0.7rem; color:var(--text-muted); font-family:var(--font-mono);"></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="inst-section-label">三大法人買賣超</div>
+                        <div class="inst-row">
+                            <span class="inst-label">外資</span>
+                            <span class="inst-value" id="inst-foreign">—</span>
+                        </div>
+                        <div class="inst-row">
+                            <span class="inst-label">投信</span>
+                            <span class="inst-value" id="inst-trust">—</span>
+                        </div>
+                        <div class="inst-row">
+                            <span class="inst-label">自營商</span>
+                            <span class="inst-value" id="inst-dealer">—</span>
+                        </div>
+                        <div class="inst-row inst-total-row">
+                            <span class="inst-label" style="font-weight:700;">合計</span>
+                            <span class="inst-value" id="inst-total" style="font-weight:700;">—</span>
+                        </div>
+
+                        <div class="inst-section-label" style="margin-top:0.6rem;">融資融券</div>
+                        <div class="inst-row">
+                            <span class="inst-label">融資餘額</span>
+                            <span class="inst-value" id="margin-bal">—</span>
+                        </div>
+                        <div class="inst-row">
+                            <span class="inst-label">融資增減</span>
+                            <span class="inst-value" id="margin-chg">—</span>
+                        </div>
+                        <div class="inst-row">
+                            <span class="inst-label">融券餘額</span>
+                            <span class="inst-value" id="short-bal">—</span>
+                        </div>
+                        <div class="inst-row">
+                            <span class="inst-label">融券增減</span>
+                            <span class="inst-value" id="short-chg">—</span>
+                        </div>
+                        <div class="inst-row inst-total-row">
+                            <span class="inst-label" style="font-weight:700;">券資比</span>
+                            <span class="inst-value" id="margin-ratio" style="font-weight:700;">—</span>
+                        </div>
+
+                        <div class="inst-section-label" style="margin-top:0.6rem;">籌碼綜合判定</div>
+                        <div id="inst-analysis" style="font-size:0.8rem; padding: 0.5rem; background: var(--bg-body); border-radius: 4px; color: var(--text-main); line-height: 1.4;">
+                            —
+                        </div>
+
+                        <div id="inst-error" style="display:none; font-size:0.75rem; color:var(--text-muted); text-align:center; padding:0.3rem 0;">籌碼資料暫時無法取得</div>
+                    </div>
+                </div>
+
+                <!-- Intraday Mode Card -->
+                <div class="card" id="intraday-card" style="display:none;">
+                    <div class="card-header intraday-header">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f472b6" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        <span>盤中即時評估</span>
+                        <span id="intraday-time" style="margin-left:auto; font-size:0.7rem; color:var(--text-muted); font-family:var(--font-mono);"></span>
+                    </div>
+                    <div class="card-body">
+                        <div id="intraday-badge" class="signal-badge" style="margin-bottom:0.6rem;">評估中...</div>
+                        <div id="intraday-score-display" style="display:flex; align-items:baseline; gap:0.5rem; margin-bottom:0.6rem;">
+                            <span style="font-size:0.78rem; color:var(--text-muted);">盤中評分</span>
+                            <span id="intraday-total-score" style="font-size:1.5rem; font-weight:800; font-family:var(--font-mono); line-height:1;">—</span>
+                            <span style="font-size:0.7rem; color:var(--text-muted);">/100</span>
+                        </div>
+                        <div class="intraday-scores">
+                            <div class="intraday-score-row">
+                                <span title="盤中價在關鍵線 0~3% 內且10MA向上：35分；跌破關鍵線但10MA向上：20分；其餘降分" style="cursor:help;">① 關鍵線防守</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="intra-s1-fill"></div></div>
+                                <span class="score-val" id="intra-s1-val">0</span>
+                            </div>
+                            <div class="intraday-score-row">
+                                <span title="量縮回測是最佳買點。低於5日均量：25分；量適中：15分；爆量下殺：0分" style="cursor:help;">② 量能結構</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="intra-s2-fill"></div></div>
+                                <span class="score-val" id="intra-s2-val">0</span>
+                            </div>
+                            <div class="intraday-score-row">
+                                <span title="黑K帶下影線(測支撐)：25分；實體小黑K(量縮整理)：20分；紅K或大長黑：不給分或低分" style="cursor:help;">③ 買黑進場</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="intra-s3-fill"></div></div>
+                                <span class="score-val" id="intra-s3-val">0</span>
+                            </div>
+                            <div class="intraday-score-row">
+                                <span title="RSI大於50（多方控盤）：15分；大於40：10分；小於40：0分" style="cursor:help;">④ 動能指標</span>
+                                <div class="score-bar-bg"><div class="score-bar-fill" id="intra-s4-fill"></div></div>
+                                <span class="score-val" id="intra-s4-val">0</span>
+                            </div>
+                        </div>
+                        <div id="intraday-detail" style="font-size:0.78rem; color:var(--text-secondary); line-height:1.7; margin-top:0.6rem;"></div>
                     </div>
                 </div>
 
